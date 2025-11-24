@@ -71,9 +71,9 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 ///
 #[must_use]
 pub fn default_aws_config() -> aws_config::ConfigLoader {
-    let user_agent = user_agent::user_agent();
-    let app_name = aws_config::AppName::new(user_agent).unwrap_or_else(|e| {
-        tracing::error!("Failed to create AWS app name from user agent '{user_agent}': {e}");
+    let app_name_str = user_agent::app_name();
+    let app_name = aws_config::AppName::new(app_name_str).unwrap_or_else(|e| {
+        tracing::error!("Failed to create AWS app name from '{app_name_str}': {e}");
         unreachable!("Invalid AWS app name: {e}");
     });
 
@@ -674,6 +674,53 @@ mod tests {
         assert_eq!(
             config.region().map(std::convert::AsRef::as_ref),
             Some("eu-west-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_aws_config_includes_app_name() {
+        let config = default_aws_config().load().await;
+
+        // Verify that app_name is set
+        let app_name = config.app_name();
+        assert!(
+            app_name.is_some(),
+            "AppName should be set in default config"
+        );
+
+        let app_name_str = app_name.expect("AppName should be Some").as_ref();
+        assert_eq!(
+            app_name_str,
+            user_agent::app_name(),
+            "AppName should match the configured product code"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_initiate_config_includes_app_name() {
+        let config_loader = initiate_config_with_credentials(
+            "test-provider",
+            "us-west-2".to_string(),
+            Some("test-key".to_string()),
+            Some("test-secret".to_string()),
+            None,
+        )
+        .await;
+
+        let config = config_loader.load().await;
+
+        // Verify that app_name is set even with explicit credentials
+        let app_name = config.app_name();
+        assert!(
+            app_name.is_some(),
+            "AppName should be set with explicit credentials"
+        );
+
+        let app_name_str = app_name.expect("AppName should be Some").as_ref();
+        assert_eq!(
+            app_name_str,
+            user_agent::app_name(),
+            "AppName should match the configured product code"
         );
     }
 }

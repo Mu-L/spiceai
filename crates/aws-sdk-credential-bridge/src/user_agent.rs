@@ -18,11 +18,25 @@ limitations under the License.
 // Reference: https://prm.partner.aws.dev/prm-user-agent-samples.html
 //
 // The product code should be retrieved from the AWS Marketplace Management Portal.
+//
+// NOTE: The Rust AWS SDK's AppName API has character restrictions (no parentheses or slashes),
+// so we use only the product code as the AppName. The full PRM format "APN/1.1 (product-code)"
+// would require implementing a custom HTTP interceptor to set the User-Agent header directly,
+// similar to the Go SDK example in the PRM documentation.
 const AWS_USER_AGENT: &str = "APN/1.1 (crl16swivin80rts2oqloids6)"; // https://aws.amazon.com/marketplace/pp/prodview-jmf6jskjvnq7i
+
+// AppName for SDK configuration (product code only, complies with AppName character restrictions)
+// This gets appended to the SDK's user-agent string as: "... app/crl16swivin80rts2oqloids6"
+const AWS_APP_NAME: &str = "crl16swivin80rts2oqloids6";
 
 #[must_use]
 pub fn user_agent() -> &'static str {
     AWS_USER_AGENT
+}
+
+#[must_use]
+pub fn app_name() -> &'static str {
+    AWS_APP_NAME
 }
 
 #[cfg(test)]
@@ -43,8 +57,16 @@ mod tests {
 
         // Extract and verify product code is not empty
         let start = ua.find('(').expect("user-agent should contain '('") + 1;
-        let end = ua.find(')').expect("user-agent should contain ')'");
+        let end = ua.find(')').expect("user-agent should contain ')')");
         let product_code = &ua[start..end];
         assert!(!product_code.is_empty());
+    }
+
+    #[test]
+    fn test_app_name_format() {
+        let name = app_name();
+        // AppName should be just the product code (alphanumeric only)
+        assert!(!name.is_empty());
+        assert!(name.chars().all(char::is_alphanumeric));
     }
 }
