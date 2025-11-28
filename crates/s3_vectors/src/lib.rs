@@ -400,7 +400,6 @@ pub mod tests {
     };
 
     #[tokio::test]
-    #[allow(clippy::too_many_lines)]
     #[ignore = "reason unknown"]
     async fn test_s3_vectors() -> Result<(), String> {
         let config = default_aws_config().load().await;

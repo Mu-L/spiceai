@@ -35,7 +35,7 @@ use crate::{
     datafusion::udf::deny_spice_specific_functions,
     make_spice_data_directory,
     parameters::ParameterSpec,
-    spice_data_base_path,
+    register_data_accelerator, spice_data_base_path,
 };
 
 use super::{AccelerationSource, DataAccelerator};
@@ -341,6 +341,8 @@ impl DataAccelerator for SqliteAccelerator {
     }
 }
 
+register_data_accelerator!(Engine::Sqlite, SqliteAccelerator);
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Arc};
@@ -366,7 +368,7 @@ mod tests {
     use crate::dataaccelerator::sqlite::SqliteAccelerator;
 
     #[tokio::test]
-    #[allow(clippy::unreadable_literal)]
+    #[expect(clippy::unreadable_literal)]
     async fn test_round_trip_sqlite() {
         let schema = Arc::new(Schema::new(vec![
             arrow::datatypes::Field::new("time_in_string", DataType::Utf8, false),
@@ -493,7 +495,6 @@ mod tests {
             .expect("initialization should be successful");
 
         assert!(accelerator.is_initialized(&dataset));
-        assert!(accelerator.file_path(&dataset).is_ok());
 
         let path = accelerator.file_path(&dataset).expect("path should exist");
         assert!(std::path::Path::new(&path).exists());

@@ -67,7 +67,7 @@ fn emit_acceleration_size_if_applicable(app: &App, app_path: &Path) -> anyhow::R
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub(crate) async fn run(args: &DatasetTestArgs) -> anyhow::Result<RowCounts> {
     let (app, start_request) = get_app_and_start_request(&args.common).await?;
     let mut spiced_instance = SpicedInstance::start(start_request).await?;
@@ -124,17 +124,19 @@ pub(crate) async fn run(args: &DatasetTestArgs) -> anyhow::Result<RowCounts> {
     let spiced_commit_sha = std::env::var("SPICED_COMMIT").unwrap_or("unknown".to_string());
     let spiced_version = metrics.spiced_version.clone();
     let app_name = app.name.clone();
-    let benchmark_resource = Resource::new(vec![
-        KeyValue::new("service.name", "testoperator"),
-        KeyValue::new("type", "benchmark_query"),
-        KeyValue::new("name", app_name.clone()),
-        KeyValue::new("spiced_version", spiced_version.clone()),
-        KeyValue::new("query_set", query_set.to_string()),
-        KeyValue::new("testoperator_commit_sha", commit_sha.clone()),
-        KeyValue::new("spiced_commit_sha", spiced_commit_sha),
-        KeyValue::new("branch_name", metrics.branch_name.clone()),
-        KeyValue::new("scale_factor", args.scale_factor.unwrap_or(1.0).to_string()),
-    ]);
+    let benchmark_resource = Resource::builder_empty()
+        .with_attributes(vec![
+            KeyValue::new("service.name", "testoperator"),
+            KeyValue::new("type", "benchmark_query"),
+            KeyValue::new("name", app_name.clone()),
+            KeyValue::new("spiced_version", spiced_version.clone()),
+            KeyValue::new("query_set", query_set.to_string()),
+            KeyValue::new("testoperator_commit_sha", commit_sha.clone()),
+            KeyValue::new("spiced_commit_sha", spiced_commit_sha),
+            KeyValue::new("branch_name", metrics.branch_name.clone()),
+            KeyValue::new("scale_factor", args.scale_factor.unwrap_or(1.0).to_string()),
+        ])
+        .build();
 
     let telemetry = Telemetry::new(&benchmark_resource, "SPICEAI_BENCHMARK_METRICS_KEY");
 

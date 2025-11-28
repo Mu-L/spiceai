@@ -30,7 +30,6 @@ use flightrepl::ReplConfig;
 use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
-use opentelemetry_sdk::runtime::Tokio;
 use otel_arrow::OtelArrowExporter;
 #[cfg(feature = "cluster")]
 use runtime::config::ClusterMode;
@@ -116,7 +115,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Parser, Debug)]
 #[clap(about = "Spice.ai OSS Runtime")]
 #[clap(rename_all = "kebab-case")]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct Args {
     /// Enable Prometheus metrics. (disabled by default)
     #[arg(long, value_name = "BIND_ADDRESS", help_heading = "Metrics")]
@@ -183,7 +182,7 @@ pub struct Args {
     pub set_runtime: Vec<(String, String)>,
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub async fn run(args: Args) -> Result<()> {
     let prometheus_registry = args.metrics.map(|_| prometheus::Registry::new());
 
@@ -373,7 +372,7 @@ fn init_metrics(
     df: &Arc<DataFusion>,
     registry: prometheus::Registry,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let resource = Resource::default();
+    let resource = Resource::builder().build();
 
     let prometheus_exporter = opentelemetry_prometheus::exporter()
         .with_registry(registry)
@@ -386,9 +385,8 @@ fn init_metrics(
     let spice_metrics_exporter =
         OtelArrowExporter::new(spice_metrics::SpiceMetricsExporter::new(df));
 
-    let periodic_reader = PeriodicReader::builder(spice_metrics_exporter, Tokio)
+    let periodic_reader = PeriodicReader::builder(spice_metrics_exporter)
         .with_interval(Duration::from_secs(30))
-        .with_timeout(Duration::from_secs(10))
         .build();
 
     let provider = SdkMeterProvider::builder()

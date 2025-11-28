@@ -40,6 +40,7 @@ pub enum RefreshMode {
     Full,
     Append,
     Changes,
+    Caching,
 }
 
 impl From<spicepod_acceleration::RefreshMode> for RefreshMode {
@@ -48,6 +49,7 @@ impl From<spicepod_acceleration::RefreshMode> for RefreshMode {
             spicepod_acceleration::RefreshMode::Full => RefreshMode::Full,
             spicepod_acceleration::RefreshMode::Append => RefreshMode::Append,
             spicepod_acceleration::RefreshMode::Changes => RefreshMode::Changes,
+            spicepod_acceleration::RefreshMode::Caching => RefreshMode::Caching,
         }
     }
 }
@@ -263,7 +265,7 @@ impl Display for OnConflictBehavior {
     }
 }
 
-#[allow(clippy::struct_excessive_bools)]
+#[expect(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Acceleration {
     pub enabled: bool,
@@ -339,7 +341,7 @@ impl Acceleration {
 impl TryFrom<spicepod_acceleration::Acceleration> for Acceleration {
     type Error = crate::Error;
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     fn try_from(
         acceleration: spicepod_acceleration::Acceleration,
     ) -> std::result::Result<Self, Self::Error> {
@@ -504,7 +506,7 @@ impl Default for Acceleration {
 }
 
 /// Returns true if the `query_federation` parameter is set to "disabled".
-#[allow(clippy::result_large_err)]
+#[expect(clippy::result_large_err)]
 fn parse_is_query_federation_disabled(params: &mut Option<Params>) -> Result<bool, crate::Error> {
     if let Some(params) = params
         && let Some(value) = params.data.remove("query_federation")
@@ -550,7 +552,7 @@ mod tests {
             "invalid".to_string(),
         )]));
         let result_invalid = parse_is_query_federation_disabled(&mut Some(params_invalid));
-        assert!(result_invalid.is_err());
+        result_invalid.expect_err("should error parsing query_federation param");
 
         let params_missing = Params::from_string_map(HashMap::new());
         let is_disabled =

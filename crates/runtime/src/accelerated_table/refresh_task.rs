@@ -32,6 +32,7 @@ use futures::{StreamExt, stream};
 use opentelemetry::KeyValue;
 use runtime_datafusion::execution_plan::schema_cast::EnsureSchema;
 use runtime_datafusion::extension::bytes_processed::BytesProcessedPhysicalOptimizer;
+use runtime_datafusion::optimizer_rule::avoid_vector_columns_on_index::AvoidDerivedVectorColumnOnIndexRule;
 use runtime_datafusion_index::analyzer::{
     IndexTableScanExtensionPlanner, IndexTableScanOptimizerRule,
 };
@@ -326,7 +327,7 @@ impl RefreshTask {
         })
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     async fn run_once(&self, refresh: &Refresh) -> Result<(), RetryError<super::Error>> {
         self.set_refresh_status(refresh.sql.as_deref(), status::ComponentStatus::Refreshing)
             .await;
@@ -393,12 +394,14 @@ impl RefreshTask {
 
         // Start timing the actual refresh operation (after early return checks)
         let _timer = MultiTimeMeasurement::new(
+            #[expect(clippy::match_same_arms)] // Caching will have different behavior in future
             match refresh.mode {
                 RefreshMode::Disabled => {
                     unreachable!("Refresh cannot be called when acceleration is disabled")
                 }
                 RefreshMode::Full | RefreshMode::Append => &metrics::REFRESH_DURATION_MS,
                 RefreshMode::Changes => unreachable!("changes are handled upstream"),
+                RefreshMode::Caching => &metrics::REFRESH_DURATION_MS,
             },
             &dataset_metrics_label_sets,
         );
@@ -415,6 +418,10 @@ impl RefreshTask {
             }
             RefreshMode::Append => self.get_incremental_append_update(refresh).await,
             RefreshMode::Changes => unreachable!("changes are handled upstream"),
+            RefreshMode::Caching => {
+                // For caching mode, identify and refresh stale rows based on fetched_at and TTL
+                self.refresh_stale_cached_rows(refresh).await
+            }
         };
 
         let streaming_data_update = match get_data_update_result {
@@ -529,7 +536,7 @@ impl RefreshTask {
             None => None,
         };
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation)]
         let current_time_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -757,6 +764,48 @@ impl RefreshTask {
         }
     }
 
+    async fn refresh_stale_cached_rows(
+        &self,
+        refresh: &Refresh,
+    ) -> Result<StreamingDataUpdate, RetryError<super::Error>> {
+        use crate::accelerated_table::caching::CacheRefreshHelper;
+
+        // Get the TTL from refresh settings - default to 30 seconds if not specified
+        let ttl = refresh.check_interval.unwrap_or(Duration::from_secs(30));
+
+        tracing::info!(
+            "Cache: Starting stale row refresh for dataset {} with TTL {:?}",
+            self.dataset_name,
+            ttl
+        );
+
+        // Use the CacheRefreshHelper to identify and refresh stale rows
+        let federated_provider = self.federated.table_provider().await;
+        let refreshed_count = CacheRefreshHelper::refresh_stale_rows(
+            federated_provider,
+            Arc::clone(&self.accelerator),
+            self.dataset_name.to_string().as_str(),
+            ttl,
+        )
+        .await
+        .map_err(|e| RetryError::permanent(super::Error::FailedToRefreshDataset { source: e }))?;
+
+        tracing::info!(
+            "Cache: Completed stale row refresh for dataset {} - refreshed {} rows",
+            self.dataset_name,
+            refreshed_count
+        );
+
+        // Return an empty streaming update since the refresh was handled internally
+        // by CacheRefreshHelper
+        let schema = self.accelerator.schema();
+        let empty_stream = RecordBatchStreamAdapter::new(schema, futures::stream::empty());
+        Ok(StreamingDataUpdate {
+            data: Box::pin(empty_stream),
+            update_type: UpdateType::Overwrite,
+        })
+    }
+
     async fn trace_load_completed(
         &self,
         start_time: SystemTime,
@@ -800,6 +849,7 @@ impl RefreshTask {
         let federated_provider = self.federated.table_provider().await;
 
         let dataset_name = self.dataset_name.clone();
+        #[expect(clippy::match_same_arms)] // Caching will have different behavior in future
         let update_type = match refresh.mode {
             RefreshMode::Disabled => {
                 unreachable!("Refresh cannot be called when acceleration is disabled")
@@ -807,6 +857,7 @@ impl RefreshTask {
             RefreshMode::Full => UpdateType::Overwrite,
             RefreshMode::Append => UpdateType::Append,
             RefreshMode::Changes => unreachable!("changes are handled upstream"),
+            RefreshMode::Caching => UpdateType::Overwrite,
         };
 
         if let Some(cpu_runtime_handle) = self.cpu_runtime.clone() {
@@ -944,6 +995,7 @@ impl RefreshTask {
                 ExtensionPlanQueryPlanner::from_extension_planners(extension_planners),
             ))
             .with_optimizer_rule(Arc::new(IndexTableScanOptimizerRule::new()))
+            .with_optimizer_rule(Arc::new(AvoidDerivedVectorColumnOnIndexRule {}))
             .with_physical_optimizer_rule(Arc::new(BytesProcessedPhysicalOptimizer::new(Arc::new(
                 Box::new(track_bytes_processed),
             ))))
@@ -992,7 +1044,6 @@ impl RefreshTask {
         ctx
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     async fn except_existing_records_from(
         &self,
         refresh: &Refresh,
@@ -1046,7 +1097,7 @@ impl RefreshTask {
         Ok(StreamingDataUpdate::new(filtered_data, update_type))
     }
 
-    #[allow(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_sign_loss)]
     async fn timestamp_nanos_for_append_query(
         &self,
         refresh: &Refresh,
@@ -1312,9 +1363,9 @@ impl DataLoadTracing {
             let elapsed_secs = elapsed.as_secs_f64();
 
             // Calculate throughput
-            #[allow(clippy::cast_precision_loss)]
-            #[allow(clippy::cast_possible_truncation)]
-            #[allow(clippy::cast_sign_loss)]
+            #[expect(clippy::cast_precision_loss)]
+            #[expect(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_sign_loss)]
             let throughput = if elapsed_secs > 0.0 {
                 let bytes_per_sec = (self.bytes_received as f64 / elapsed_secs) as usize;
                 format!("{}/s", util::human_readable_bytes(bytes_per_sec))
@@ -1342,7 +1393,7 @@ impl DataLoadTracing {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub fn max_timestamp_df(
     accelerator: &Arc<dyn TableProvider>,
     ctx: SessionContext,
