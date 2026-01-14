@@ -91,6 +91,7 @@ impl DatasetCheckpoint {
         &self,
         pool: &Arc<DuckDbConnectionPool>,
         schema: &SchemaRef,
+        refresh_sql: Option<&str>,
     ) -> Result<()> {
         let mut db_conn = Arc::clone(pool).connect_sync().map_err(Error::external)?;
         let duckdb_conn = datafusion_table_providers::duckdb::DuckDB::duckdb_conn(&mut db_conn)
@@ -98,14 +99,18 @@ impl DatasetCheckpoint {
             .get_underlying_conn_mut();
 
         let schema_json = Self::serialize_schema(schema)?;
+        // Use COALESCE to preserve existing refresh_sql when None is passed
         let upsert = format!(
-            "INSERT INTO {CHECKPOINT_TABLE_NAME} (dataset_name, created_at, updated_at, schema_json)
-             VALUES (?, now(), now(), ?)
+            "INSERT INTO {CHECKPOINT_TABLE_NAME} (dataset_name, created_at, updated_at, schema_json, refresh_sql)
+             VALUES (?, now(), now(), ?, ?)
              ON CONFLICT (dataset_name) DO UPDATE 
-             SET updated_at = now(), schema_json = excluded.schema_json"
+             SET updated_at = now(), schema_json = excluded.schema_json, refresh_sql = COALESCE(excluded.refresh_sql, {CHECKPOINT_TABLE_NAME}.refresh_sql)"
         );
         duckdb_conn
-            .execute(&upsert, [&self.dataset_name, &schema_json])
+            .execute(
+                &upsert,
+                duckdb::params![&self.dataset_name, &schema_json, refresh_sql],
+            )
             .map_err(Error::external)?;
 
         if self.snapshot_behavior.create_enabled() {
@@ -126,6 +131,10 @@ impl DatasetCheckpoint {
 
         duckdb_conn
             .execute(SCHEMA_MIGRATION_01_STMT, [])
+            .map_err(Error::external)?;
+
+        duckdb_conn
+            .execute(super::REFRESH_SQL_MIGRATION_STMT, [])
             .map_err(Error::external)?;
 
         Ok(())
@@ -152,6 +161,29 @@ impl DatasetCheckpoint {
                 Some(json) => Ok(Some(Self::deserialize_schema(&json)?)),
                 None => Ok(None),
             }
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(super) fn get_refresh_sql_duckdb(
+        &self,
+        pool: &Arc<DuckDbConnectionPool>,
+    ) -> Result<Option<String>> {
+        let mut db_conn = Arc::clone(pool).connect_sync().map_err(Error::external)?;
+        let duckdb_conn = datafusion_table_providers::duckdb::DuckDB::duckdb_conn(&mut db_conn)
+            .map_err(Error::external)?
+            .get_underlying_conn_mut();
+
+        let query = format!(
+            "SELECT refresh_sql FROM {CHECKPOINT_TABLE_NAME} WHERE dataset_name = ? LIMIT 1"
+        );
+        let mut stmt = duckdb_conn.prepare(&query).map_err(Error::external)?;
+        let mut rows = stmt.query([&self.dataset_name]).map_err(Error::external)?;
+
+        if let Some(row) = rows.next().map_err(Error::external)? {
+            let refresh_sql: Option<String> = row.get(0).map_err(Error::external)?;
+            Ok(refresh_sql)
         } else {
             Ok(None)
         }
@@ -228,7 +260,7 @@ mod tests {
 
         // Save the schema
         checkpoint
-            .checkpoint(&schema_ref)
+            .checkpoint(&schema_ref, None)
             .await
             .expect("Failed to save schema");
 
@@ -266,7 +298,7 @@ mod tests {
         let schema_ref = std::sync::Arc::new(schema.clone());
 
         checkpoint
-            .checkpoint(&schema_ref)
+            .checkpoint(&schema_ref, None)
             .await
             .expect("Failed to save schema after migration");
 
@@ -298,7 +330,7 @@ mod tests {
 
         // Create the checkpoint with schema
         checkpoint
-            .checkpoint(&schema_ref)
+            .checkpoint(&schema_ref, None)
             .await
             .expect("Failed to create checkpoint");
 
@@ -324,7 +356,7 @@ mod tests {
 
         // Create the initial checkpoint
         checkpoint
-            .checkpoint(&schema_ref1)
+            .checkpoint(&schema_ref1, None)
             .await
             .expect("Failed to create initial checkpoint");
 
@@ -340,7 +372,7 @@ mod tests {
 
         // Update the checkpoint with new schema
         checkpoint
-            .checkpoint(&schema_ref2)
+            .checkpoint(&schema_ref2, None)
             .await
             .expect("Failed to update checkpoint");
 
@@ -416,7 +448,7 @@ mod tests {
 
         // Create the checkpoint
         checkpoint
-            .checkpoint(&schema_ref)
+            .checkpoint(&schema_ref, None)
             .await
             .expect("Failed to create checkpoint");
 
@@ -439,7 +471,7 @@ mod tests {
 
         // Update the checkpoint
         checkpoint
-            .checkpoint(&schema_ref)
+            .checkpoint(&schema_ref, None)
             .await
             .expect("Failed to update checkpoint");
 

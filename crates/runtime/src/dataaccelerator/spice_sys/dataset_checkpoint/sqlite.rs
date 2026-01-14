@@ -73,6 +73,13 @@ impl DatasetCheckpoint {
                     )?;
                 }
 
+                if !columns.contains(&"refresh_sql".to_string()) {
+                    conn.execute(
+                        &format!("ALTER TABLE {CHECKPOINT_TABLE_NAME} ADD COLUMN refresh_sql TEXT"),
+                        [],
+                    )?;
+                }
+
                 Ok::<(), rusqlite::Error>(())
             })
             .await
@@ -139,9 +146,11 @@ impl DatasetCheckpoint {
         &self,
         pool: &SqliteConnectionPool,
         schema: &SchemaRef,
+        refresh_sql: Option<&str>,
     ) -> Result<()> {
         let dataset_name = self.dataset_name.clone();
         let schema_json = Self::serialize_schema(schema)?;
+        let refresh_sql_owned = refresh_sql.map(ToString::to_string);
 
         let conn_sync = pool.connect_sync();
         let Some(conn) = conn_sync.as_any().downcast_ref::<SqliteConnection>() else {
@@ -152,15 +161,47 @@ impl DatasetCheckpoint {
 
         conn.conn
             .call(move |conn| {
+                // Use COALESCE to preserve existing refresh_sql when None is passed
                 let upsert = format!(
-                    "INSERT INTO {CHECKPOINT_TABLE_NAME} (dataset_name, schema_json, updated_at)
-                     VALUES (?1, ?2, CURRENT_TIMESTAMP)
+                    "INSERT INTO {CHECKPOINT_TABLE_NAME} (dataset_name, schema_json, refresh_sql, updated_at)
+                     VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP)
                      ON CONFLICT (dataset_name) DO UPDATE 
-                     SET schema_json = ?2, updated_at = CURRENT_TIMESTAMP"
+                     SET schema_json = ?2, refresh_sql = COALESCE(?3, {CHECKPOINT_TABLE_NAME}.refresh_sql), updated_at = CURRENT_TIMESTAMP"
                 );
-                conn.execute(&upsert, [&dataset_name, &schema_json])?;
+                conn.execute(&upsert, rusqlite::params![&dataset_name, &schema_json, &refresh_sql_owned])?;
 
                 Ok::<(), rusqlite::Error>(())
+            })
+            .await
+            .map_err(Error::external)
+    }
+
+    pub(super) async fn get_refresh_sql_sqlite(
+        &self,
+        pool: &SqliteConnectionPool,
+    ) -> Result<Option<String>> {
+        let dataset_name = self.dataset_name.clone();
+
+        let conn_sync = pool.connect_sync();
+        let Some(conn) = conn_sync.as_any().downcast_ref::<SqliteConnection>() else {
+            return Err(Error::DowncastFailed {
+                target: "SqliteConnection",
+            });
+        };
+
+        conn.conn
+            .call(move |conn| {
+                let query = format!(
+                    "SELECT refresh_sql FROM {CHECKPOINT_TABLE_NAME} WHERE dataset_name = ?"
+                );
+                let mut stmt = conn.prepare(&query)?;
+                let mut rows = stmt.query([dataset_name])?;
+
+                if let Some(row) = rows.next()? {
+                    Ok::<Option<String>, rusqlite::Error>(row.get(0)?)
+                } else {
+                    Ok(None)
+                }
             })
             .await
             .map_err(Error::external)
@@ -303,7 +344,7 @@ mod tests {
         let schema_ref = std::sync::Arc::new(schema.clone());
 
         checkpoint
-            .checkpoint(&schema_ref)
+            .checkpoint(&schema_ref, None)
             .await
             .expect("Failed to save schema after migration");
 
@@ -332,7 +373,7 @@ mod tests {
 
         // Save the schema
         checkpoint
-            .checkpoint(&schema_ref)
+            .checkpoint(&schema_ref, None)
             .await
             .expect("Failed to save schema");
 
@@ -362,7 +403,7 @@ mod tests {
 
         // Create the checkpoint with schema
         checkpoint
-            .checkpoint(&schema_ref)
+            .checkpoint(&schema_ref, None)
             .await
             .expect("Failed to create checkpoint");
 
@@ -388,7 +429,7 @@ mod tests {
 
         // Create the initial checkpoint
         checkpoint
-            .checkpoint(&schema_ref1)
+            .checkpoint(&schema_ref1, None)
             .await
             .expect("Failed to create initial checkpoint");
 
@@ -404,7 +445,7 @@ mod tests {
 
         // Update the checkpoint with new schema
         checkpoint
-            .checkpoint(&schema_ref2)
+            .checkpoint(&schema_ref2, None)
             .await
             .expect("Failed to update checkpoint");
 
@@ -473,7 +514,7 @@ mod tests {
 
         // Create the checkpoint
         checkpoint
-            .checkpoint(&schema_ref)
+            .checkpoint(&schema_ref, None)
             .await
             .expect("Failed to create checkpoint");
 
@@ -496,7 +537,7 @@ mod tests {
 
         // Update the checkpoint
         checkpoint
-            .checkpoint(&schema_ref)
+            .checkpoint(&schema_ref, None)
             .await
             .expect("Failed to update checkpoint");
 

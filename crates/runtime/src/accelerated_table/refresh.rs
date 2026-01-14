@@ -274,7 +274,7 @@ impl Refresh {
         let previous_checkpoint = match self.mode {
             RefreshMode::Full => {
                 // If there is no checkpoint, we need to start a refresh.
-                let Some(last_checkpoint) = last_checkpoint else {
+                let Some(ref last_checkpoint) = last_checkpoint else {
                     return NextRefresh::WaitFor(Duration::ZERO);
                 };
                 last_checkpoint.last_checkpoint_time().await.ok().flatten()
@@ -308,6 +308,19 @@ impl Refresh {
         let Some(prev_checkpoint_time) = previous_checkpoint else {
             return NextRefresh::WaitFor(Duration::ZERO);
         };
+
+        // Check if the refresh_sql has changed since the last checkpoint.
+        // If it has, we need to re-run the refresh to apply the new SQL.
+        if let Some(ref checkpointer) = last_checkpoint {
+            if let Ok(stored_refresh_sql) = checkpointer.get_refresh_sql().await {
+                if stored_refresh_sql != self.sql {
+                    tracing::info!(
+                        "refresh_sql has changed since last checkpoint, triggering refresh"
+                    );
+                    return NextRefresh::WaitFor(Duration::ZERO);
+                }
+            }
+        }
 
         // If the refresh interval is set, we need to start a refresh if the elapsed time since the last checkpoint is greater than the refresh interval.
         // Otherwise, we don't need to start a refresh.
@@ -821,8 +834,9 @@ impl Refresher {
 
                             if let Some(checkpointer) = &checkpointer {
                                 let _lock_guard = snapshot_mutex.lock().await;
+                                let refresh_sql = refresh.read().await.sql.clone();
                                 match (
-                                    checkpointer.checkpoint(&federated_schema).await,
+                                    checkpointer.checkpoint(&federated_schema, refresh_sql.as_deref()).await,
                                     snapshot_manager.as_ref(),
                                 ) {
                                     (Ok(()), Some(snapshot_manager)) => {
@@ -983,7 +997,7 @@ fn spawn_snapshot_interval_task(
 
         loop {
             let _lock_guard = accelerator_write_mutex.lock().await;
-            if let Err(e) = checkpointer.checkpoint(&federated_schema).await {
+            if let Err(e) = checkpointer.checkpoint(&federated_schema, None).await {
                 tracing::warn!("Failed to checkpoint dataset {dataset_name}: {e}");
             } else if let Err(e) = snapshot_manager.create_snapshot(&federated_schema).await {
                 let dataset_label = dataset_name.to_string();
@@ -1037,7 +1051,7 @@ fn create_periodic_snapshot_callback(
                         tracing::debug!("Creating snapshot for changes stream: {}", dataset_name);
 
                         let _lock_guard = accelerator_write_mutex.lock().await;
-                        if let Err(e) = checkpointer.checkpoint(&federated_schema).await {
+                        if let Err(e) = checkpointer.checkpoint(&federated_schema, None).await {
                             tracing::warn!("Failed to checkpoint dataset {dataset_name}: {e}");
                             return;
                         }
@@ -1153,6 +1167,7 @@ mod tests {
         async fn checkpoint(
             &self,
             _schema: &SchemaRef,
+            _refresh_sql: Option<&str>,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Not needed for this test
             Ok(())
@@ -1169,6 +1184,13 @@ mod tests {
             &self,
         ) -> Result<Option<SystemTime>, Box<dyn std::error::Error + Send + Sync>> {
             Ok(self.last_checkpoint_time)
+        }
+
+        async fn get_refresh_sql(
+            &self,
+        ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+            // Not needed for this test
+            Ok(None)
         }
     }
 
