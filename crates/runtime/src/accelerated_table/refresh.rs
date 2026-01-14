@@ -311,15 +311,12 @@ impl Refresh {
 
         // Check if the refresh_sql has changed since the last checkpoint.
         // If it has, we need to re-run the refresh to apply the new SQL.
-        if let Some(ref checkpointer) = last_checkpoint {
-            if let Ok(stored_refresh_sql) = checkpointer.get_refresh_sql().await {
-                if stored_refresh_sql != self.sql {
-                    tracing::info!(
-                        "refresh_sql has changed since last checkpoint, triggering refresh"
-                    );
-                    return NextRefresh::WaitFor(Duration::ZERO);
-                }
-            }
+        if let Some(ref checkpointer) = last_checkpoint
+            && let Ok(stored_refresh_sql) = checkpointer.get_refresh_sql().await
+            && stored_refresh_sql != self.sql
+        {
+            tracing::info!("refresh_sql has changed since last checkpoint, triggering refresh");
+            return NextRefresh::WaitFor(Duration::ZERO);
         }
 
         // If the refresh interval is set, we need to start a refresh if the elapsed time since the last checkpoint is greater than the refresh interval.
